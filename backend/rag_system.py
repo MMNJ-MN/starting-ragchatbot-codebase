@@ -16,7 +16,7 @@ class RAGSystem:
         # Initialize core components
         self.document_processor = DocumentProcessor(config.CHUNK_SIZE, config.CHUNK_OVERLAP)
         self.vector_store = VectorStore(config.CHROMA_PATH, config.EMBEDDING_MODEL, config.MAX_RESULTS)
-        self.ai_generator = AIGenerator(config.ANTHROPIC_API_KEY, config.ANTHROPIC_MODEL)
+        self.ai_generator = AIGenerator(config.OLLAMA_MODEL, config.OLLAMA_BASE_URL)
         self.session_manager = SessionManager(config.MAX_HISTORY)
         
         # Initialize search tools
@@ -101,42 +101,40 @@ class RAGSystem:
     
     def query(self, query: str, session_id: Optional[str] = None) -> Tuple[str, List[str]]:
         """
-        Process a user query using the RAG system with tool-based search.
-        
-        Args:
-            query: User's question
-            session_id: Optional session ID for conversation context
-            
-        Returns:
-            Tuple of (response, sources list - empty for tool-based approach)
+        Process a user query using the RAG system.
+        Searches the vector store directly, then passes results as context to the model.
         """
-        # Create prompt for the AI with clear instructions
-        prompt = f"""Answer this question about course materials: {query}"""
-        
+        # Always search the vector store first
+        search_results = self.search_tool.execute(query=query)
+        sources = self.tool_manager.get_last_sources()
+        self.tool_manager.reset_sources()
+
+        # Build prompt with retrieved context
+        if search_results and "No relevant content found" not in search_results:
+            prompt = f"""Use the following course material to answer the question. Only use the provided material — do not make up information.
+
+Course material:
+{search_results}
+
+Question: {query}"""
+        else:
+            prompt = f"Answer this question about course materials: {query}"
+
         # Get conversation history if session exists
         history = None
         if session_id:
             history = self.session_manager.get_conversation_history(session_id)
-        
-        # Generate response using AI with tools
+
+        # Generate response without tools
         response = self.ai_generator.generate_response(
             query=prompt,
-            conversation_history=history,
-            tools=self.tool_manager.get_tool_definitions(),
-            tool_manager=self.tool_manager
+            conversation_history=history
         )
-        
-        # Get sources from the search tool
-        sources = self.tool_manager.get_last_sources()
 
-        # Reset sources after retrieving them
-        self.tool_manager.reset_sources()
-        
         # Update conversation history
         if session_id:
             self.session_manager.add_exchange(session_id, query, response)
-        
-        # Return response with sources from tool searches
+
         return response, sources
     
     def get_course_analytics(self) -> Dict:

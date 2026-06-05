@@ -25,31 +25,44 @@ class CourseSearchTool(Tool):
         self.last_sources = []  # Track sources from last search
     
     def get_tool_definition(self) -> Dict[str, Any]:
-        """Return Anthropic tool definition for this tool"""
+        """Return Ollama tool definition for this tool"""
         return {
-            "name": "search_course_content",
-            "description": "Search course materials with smart course name matching and lesson filtering",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string", 
-                        "description": "What to search for in the course content"
+            "type": "function",
+            "function": {
+                "name": "search_course_content",
+                "description": "Search course materials with smart course name matching and lesson filtering",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "What to search for in the course content"
+                        },
+                        "course_name": {
+                            "type": "string",
+                            "description": "Course title (partial matches work, e.g. 'MCP', 'Introduction')"
+                        },
+                        "lesson_number": {
+                            "type": "integer",
+                            "description": "Specific lesson number to search within (e.g. 1, 2, 3)"
+                        }
                     },
-                    "course_name": {
-                        "type": "string",
-                        "description": "Course title (partial matches work, e.g. 'MCP', 'Introduction')"
-                    },
-                    "lesson_number": {
-                        "type": "integer",
-                        "description": "Specific lesson number to search within (e.g. 1, 2, 3)"
-                    }
-                },
-                "required": ["query"]
+                    "required": ["query"]
+                }
             }
         }
     
-    def execute(self, query: str, course_name: Optional[str] = None, lesson_number: Optional[int] = None) -> str:
+    def execute(self, query: str, course_name=None, lesson_number=None) -> str:
+        # Guard against malformed arguments from the model
+        if not isinstance(query, str):
+            query = str(query)
+        if course_name is not None and not isinstance(course_name, str):
+            course_name = None
+        if lesson_number is not None and not isinstance(lesson_number, int):
+            try:
+                lesson_number = int(lesson_number)
+            except (ValueError, TypeError):
+                lesson_number = None
         """
         Execute the search tool with given parameters.
         
@@ -101,15 +114,25 @@ class CourseSearchTool(Tool):
             header += "]"
             
             # Track source for the UI
-            source = course_title
+            label = course_title
             if lesson_num is not None:
-                source += f" - Lesson {lesson_num}"
-            sources.append(source)
+                label += f" - Lesson {lesson_num}"
+            url = self.store.get_lesson_link(course_title, lesson_num) if lesson_num is not None else None
+            sources.append({"label": label, "url": url})
             
             formatted.append(f"{header}\n{doc}")
         
+        # Deduplicate sources while preserving order
+        seen = set()
+        unique_sources = []
+        for s in sources:
+            key = s["label"]
+            if key not in seen:
+                seen.add(key)
+                unique_sources.append(s)
+
         # Store sources for retrieval
-        self.last_sources = sources
+        self.last_sources = unique_sources
         
         return "\n\n".join(formatted)
 
@@ -122,7 +145,7 @@ class ToolManager:
     def register_tool(self, tool: Tool):
         """Register any tool that implements the Tool interface"""
         tool_def = tool.get_tool_definition()
-        tool_name = tool_def.get("name")
+        tool_name = tool_def.get("name") or tool_def.get("function", {}).get("name")
         if not tool_name:
             raise ValueError("Tool must have a 'name' in its definition")
         self.tools[tool_name] = tool
